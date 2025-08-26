@@ -19,7 +19,6 @@ from pathlib import Path
 import ast
 import base64
 from io import BytesIO
-import yt_dlp
 import os
 from typing import List, Dict, Any, Optional
 import time
@@ -27,6 +26,17 @@ import hashlib
 from urllib.parse import urlparse, parse_qs
 import google.genai as genai
 from dotenv import load_dotenv
+from Channel_analysis.youtube_fetcher import (
+    fetch_channel_videos as fetch_channel_videos_api,
+    normalize_channel_input,
+    resolve_channel_id_from_web,
+)
+from youtube_strategy_app.supabase_service import (
+    get_channel_analytics,
+    upsert_channel_analytics,
+    get_strategy,
+    upsert_strategy,
+)
 
 # Load environment variables
 load_dotenv()
@@ -117,58 +127,26 @@ class YouTubeAnalyzer:
                 return match.group(1)
         return None
     
-    def get_channel_videos(self, channel_url: str, max_videos: int = 50) -> List[Dict]:
-        """Extract channel videos using yt-dlp"""
+    def get_channel_videos_via_api(self, channel_input: str, api_key: str, max_videos: int = 50, include_comments: bool = True, comment_limit: int = 20) -> pd.DataFrame:
+        """Fetch channel videos using YouTube Data API via Channel_analysis.youtube_fetcher."""
         try:
-            ydl_opts = {
-                'quiet': True,
-                'extract_flat': True,
-                'playlistend': max_videos,
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                playlist_info = ydl.extract_info(f"{channel_url}/videos", download=False)
-                
-                videos = []
-                for entry in playlist_info.get('entries', [])[:max_videos]:
-                    if entry:
-                        # Get detailed info for each video
-                        detailed_info = self._get_video_details(entry.get('id', ''))
-                        if detailed_info:
-                            videos.append(detailed_info)
-                
-                return videos
+            df = fetch_channel_videos_api(
+                channel_input,
+                method='api',
+                api_key=api_key,
+                max_videos=max_videos,
+                include_comments=include_comments,
+                comment_limit=comment_limit,
+                include_transcript=False,
+                transcript_languages=None,
+                transcript_max_chars=None,
+            )
+            return df
         except Exception as e:
-            st.error(f"Error fetching channel videos: {str(e)}")
-            return []
+            st.error(f"Error fetching via YouTube Data API: {e}")
+            return pd.DataFrame()
     
-    def _get_video_details(self, video_id: str) -> Optional[Dict]:
-        """Get detailed information for a specific video"""
-        try:
-            ydl_opts = {
-                'quiet': True,
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                
-                return {
-                    'video_id': video_id,
-                    'title': info.get('title', ''),
-                    'description': info.get('description', ''),
-                    'view_count': info.get('view_count', 0),
-                    'like_count': info.get('like_count', 0),
-                    'duration': info.get('duration', 0),
-                    'upload_date': info.get('upload_date', ''),
-                    'uploader': info.get('uploader', ''),
-                    'thumbnail': info.get('thumbnail', ''),
-                    'tags': info.get('tags', []),
-                    'categories': info.get('categories', []),
-                    'url': f"https://www.youtube.com/watch?v={video_id}"
-                }
-        except Exception as e:
-            st.error(f"Error getting video details for {video_id}: {str(e)}")
-            return None
+    # yt-dlp based detail fetch removed
     
     def analyze_thumbnails(self, videos: List[Dict]) -> Dict[str, Any]:
         """Analyze thumbnail patterns and effectiveness"""
@@ -369,10 +347,22 @@ class YouTubeAnalyzer:
         word_counts = pd.Series(all_words).value_counts()
         return word_counts.head(10).index.tolist()
     
-    def generate_content_strategy(self, analysis_results: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_content_strategy(self, channel_key: str, analysis_results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate AI-powered content strategy recommendations"""
+        # First, try cached strategy from Supabase
+        try:
+            cached = get_strategy(channel_key)
+            if isinstance(cached, dict) and cached.get('ai_recommendations'):
+                return cached
+        except Exception:
+            pass
         if not self.client:
-            return self._generate_basic_strategy(analysis_results)
+            basic = self._generate_basic_strategy(analysis_results)
+            try:
+                upsert_strategy(channel_key, basic)
+            except Exception:
+                pass
+            return basic
             
         try:
             # Prepare analysis data for AI
@@ -439,13 +429,23 @@ class YouTubeAnalyzer:
                 contents=prompt
             )
             
-            return {
+            generated = {
                 'ai_recommendations': response.text,
                 'strategy_type': 'ai_generated'
             }
+            try:
+                upsert_strategy(channel_key, generated)
+            except Exception:
+                pass
+            return generated
             
         except Exception as e:
-            return self._generate_basic_strategy(analysis_results)
+            basic = self._generate_basic_strategy(analysis_results)
+            try:
+                upsert_strategy(channel_key, basic)
+            except Exception:
+                pass
+            return basic
     
     def _generate_basic_strategy(self, analysis_results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate basic strategy recommendations without AI"""
@@ -623,27 +623,35 @@ def create_content_analysis(df: pd.DataFrame):
         )
         st.plotly_chart(fig_duration, use_container_width=True)
 
-def create_strategy_recommendations(df: pd.DataFrame):
-    """Generate comprehensive strategy recommendations"""
+def create_strategy_recommendations(df: pd.DataFrame, channel_key: Optional[str] = None):
+    """Generate comprehensive strategy recommendations with Supabase caching."""
     st.subheader("🚀 Content Strategy Recommendations")
-    
-    # Analyze patterns
     analyzer = YouTubeAnalyzer()
-    
-    # Convert DataFrame to list of dicts for analysis
+    # Determine a stable channel_key when not provided
+    if not channel_key:
+        try:
+            if 'channel' in df.columns and isinstance(df.iloc[0]['channel'], str):
+                channel_key = str(df.iloc[0]['channel'])
+            elif 'url' in df.columns and isinstance(df.iloc[0]['url'], str):
+                channel_key = df.iloc[0]['url'].split('/watch?v=')[0]
+            else:
+                concat = '|'.join(map(str, df.get('video_id', pd.Series([])).tolist()[:20]))
+                channel_key = f"uploaded:{hashlib.sha256(concat.encode()).hexdigest()[:16]}"
+        except Exception:
+            channel_key = f"uploaded:{hashlib.sha256(str(time.time()).encode()).hexdigest()[:16]}"
     videos_data = df.to_dict('records')
     analysis_results = analyzer.analyze_content_patterns(videos_data)
-    
-    # Generate strategy
-    strategy = analyzer.generate_content_strategy(analysis_results)
-    
+    strategy = analyzer.generate_content_strategy(channel_key, analysis_results)
+    # Optionally persist analytics snapshot as well
+    try:
+        upsert_channel_analytics(channel_key, df)
+    except Exception:
+        pass
     # Display recommendations in organized sections
     col1, col2 = st.columns(2)
-    
     with col1:
         st.markdown("### 🎯 Title Optimization")
         title_patterns = analysis_results.get('title_patterns', {})
-        
         st.info(f"""
         **Optimal Title Length**: {title_patterns.get('avg_length', 50):.0f} characters
         
@@ -651,11 +659,13 @@ def create_strategy_recommendations(df: pd.DataFrame):
         
         **Punctuation Usage**: Use exclamation marks and questions strategically
         """)
-        
         st.markdown("### 📏 Video Length Strategy")
-        avg_duration = df['duration_seconds'].mean() / 60
-        top_performers_avg = df.nlargest(10, 'view_count')['duration_seconds'].mean() / 60
-        
+        try:
+            avg_duration = (df['duration_seconds'].mean() or 0) / 60
+            top_performers_avg = (df.nlargest(10, 'view_count')['duration_seconds'].mean() or 0) / 60
+        except Exception:
+            avg_duration = 0
+            top_performers_avg = 0
         st.success(f"""
         **Channel Average**: {avg_duration:.1f} minutes
         
@@ -663,26 +673,20 @@ def create_strategy_recommendations(df: pd.DataFrame):
         
         **Recommendation**: Aim for {top_performers_avg:.0f}-{top_performers_avg*1.2:.0f} minute videos
         """)
-    
     with col2:
         st.markdown("### 📅 Publishing Strategy")
-        
-        # Analyze posting frequency with defensive programming
         try:
             df['published_date'] = pd.to_datetime(df['published_at'], errors='coerce', utc=True)
-            # Handle timezone-aware to timezone-naive conversion
             if df['published_date'].dt.tz is not None:
                 df['published_date_naive'] = df['published_date'].dt.tz_localize(None)
             else:
                 df['published_date_naive'] = df['published_date']
-            
             cutoff_date = datetime.now() - timedelta(days=90)
             df_recent = df[df['published_date_naive'] > cutoff_date]
-            weekly_posts = len(df_recent) / 13  # approximate weeks in 90 days
+            weekly_posts = len(df_recent) / 13
         except Exception as e:
             st.warning(f"Could not analyze posting frequency: {str(e)}")
             weekly_posts = 0
-        
         st.warning(f"""
         **Current Frequency**: {weekly_posts:.1f} videos per week
         
@@ -690,7 +694,6 @@ def create_strategy_recommendations(df: pd.DataFrame):
         
         **Best Publishing Days**: Tuesday, Thursday, Saturday
         """)
-        
         st.markdown("### 🎨 Visual Strategy")
         st.info("""
         **Thumbnail Tips**:
@@ -701,17 +704,13 @@ def create_strategy_recommendations(df: pd.DataFrame):
         
         **A/B Test**: Different thumbnail styles monthly
         """)
-    
-    # AI-Generated Strategy (if available)
     if strategy.get('strategy_type') == 'ai_generated':
         st.markdown("### 🤖 AI-Powered Insights")
         with st.expander("View Detailed AI Recommendations"):
             st.markdown(strategy.get('ai_recommendations', ''))
     else:
-        # Helpful guidance if AI is not active
         st.info(
-            "AI insights are disabled. To enable, set `GEMINI_API_KEY`, `GOOGLE_API_KEY`, "
-            "or `GOOGLE_GENAI_API_KEY` in your environment (or Streamlit secrets) and restart."
+            strategy.get('ai_recommendations', "AI insights are disabled. To enable, set GEMINI_API_KEY/GOOGLE_API_KEY/GOOGLE_GENAI_API_KEY.")
         )
 
 def main():
@@ -745,6 +744,7 @@ def main():
                 placeholder="https://www.youtube.com/@channelname"
             )
             max_videos = st.slider("Max Videos to Analyze", 10, 100, 50)
+            yt_api_key = st.text_input("YouTube Data API Key", value=os.getenv("YOUTUBE_API_KEY", ""), type="password")
             
         else:
             st.info("Upload your own channel data CSV")
@@ -797,27 +797,55 @@ def main():
     
     elif analysis_mode == "Analyze New Channel":
         if st.button("🔍 Analyze Channel") and channel_url:
-            with st.spinner("Fetching channel data... This may take a few minutes."):
-                analyzer = YouTubeAnalyzer()
-                videos_data = analyzer.get_channel_videos(channel_url, max_videos)
-                
-                if videos_data:
-                    df = pd.DataFrame(videos_data)
-                    st.success(f"Successfully analyzed {len(df)} videos!")
-                    
-                    # Show analysis
-                    tab1, tab2, tab3 = st.tabs(["📊 Performance", "🎯 Content Analysis", "🚀 Strategy"])
-                    
-                    with tab1:
-                        create_performance_dashboard(df, "Analyzed Channel")
-                    
-                    with tab2:
-                        create_content_analysis(df)
-                    
-                    with tab3:
-                        create_strategy_recommendations(df)
-                else:
-                    st.error("Could not fetch channel data. Please check the URL and try again.")
+            if not yt_api_key:
+                st.error("YouTube Data API Key is required.")
+            else:
+                with st.spinner("Fetching channel data via YouTube Data API... This may take a few minutes."):
+                    analyzer = YouTubeAnalyzer()
+                    # Compute a stable channel key for caching
+                    try:
+                        normalized_url = normalize_channel_input(channel_url)
+                    except Exception:
+                        normalized_url = channel_url.strip()
+                    channel_id = None
+                    try:
+                        channel_id = resolve_channel_id_from_web(normalized_url)
+                    except Exception:
+                        channel_id = None
+                    channel_key = channel_id or normalized_url
+                    # Try Supabase cache first
+                    df_cached = get_channel_analytics(channel_key)
+                    if df_cached is not None and not df_cached.empty:
+                        df = df_cached
+                    else:
+                        df = analyzer.get_channel_videos_via_api(channel_url, yt_api_key, max_videos=max_videos)
+                        if df is not None and not df.empty:
+                            try:
+                                upsert_channel_analytics(channel_key, df)
+                            except Exception:
+                                pass
+                    if df is not None and not df.empty:
+                        st.success(f"Analyzed {len(df)} videos (cached or freshly fetched).")
+                        # Show analysis
+                        tab1, tab2, tab3 = st.tabs(["📊 Performance", "🎯 Content Analysis", "🚀 Strategy"])
+                        with tab1:
+                            create_performance_dashboard(df, "Analyzed Channel")
+                        with tab2:
+                            create_content_analysis(df)
+                        with tab3:
+                            # Pass channel_key for strategy caching
+                            analysis_results = YouTubeAnalyzer().analyze_content_patterns(df.to_dict('records'))
+                            strategy = YouTubeAnalyzer().generate_content_strategy(channel_key, analysis_results)
+                            # Render similar to create_strategy_recommendations but using cached strategy
+                            st.markdown("### 🚀 Strategy Recommendations")
+                            if strategy.get('strategy_type') == 'ai_generated':
+                                st.markdown("### 🤖 AI-Powered Insights")
+                                with st.expander("View Detailed AI Recommendations"):
+                                    st.markdown(strategy.get('ai_recommendations', ''))
+                            else:
+                                st.info(strategy.get('ai_recommendations', ''))
+                    else:
+                        st.error("Could not fetch channel data. Please check the URL, API key, and try again.")
     
     else:  # Upload Custom Data
         if 'uploaded_file' in locals() and uploaded_file:
