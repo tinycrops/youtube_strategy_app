@@ -32,10 +32,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configure Gemini API
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+# Support multiple common env var names for convenience
+GEMINI_API_KEY = (
+    os.getenv('GEMINI_API_KEY')
+    or os.getenv('GOOGLE_API_KEY')
+    or os.getenv('GOOGLE_GENAI_API_KEY')
+)
 client = None
 if GEMINI_API_KEY:
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception:
+        client = None
 
 # Page configuration
 st.set_page_config(
@@ -671,6 +679,12 @@ def create_strategy_recommendations(df: pd.DataFrame):
         st.markdown("### 🤖 AI-Powered Insights")
         with st.expander("View Detailed AI Recommendations"):
             st.markdown(strategy.get('ai_recommendations', ''))
+    else:
+        # Helpful guidance if AI is not active
+        st.info(
+            "AI insights are disabled. To enable, set `GEMINI_API_KEY`, `GOOGLE_API_KEY`, "
+            "or `GOOGLE_GENAI_API_KEY` in your environment (or Streamlit secrets) and restart."
+        )
 
 def main():
     """Main Streamlit application"""
