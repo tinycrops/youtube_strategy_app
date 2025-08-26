@@ -294,6 +294,189 @@ class YouTubeAnalyzer:
             'performance_factors': self._identify_success_factors(df)
         }
 
+    def _calculate_views_per_day(self, views: int, upload_date: str) -> float:
+        """Calculate views per day since upload"""
+        try:
+            if not upload_date:
+                return 0
+            # Handle different date formats
+            try:
+                # Try ISO format first (from CSV: 2025-08-24 13:00:06+00:00)
+                if 'T' in upload_date or ' ' in upload_date:
+                    # Parse ISO format and strip timezone info
+                    upload_date_clean = upload_date.split('+')[0].split('T')[0].replace(' ', 'T').split('T')[0]
+                    upload_dt = datetime.strptime(upload_date_clean, '%Y-%m-%d')
+                else:
+                    # Try original format (YYYYMMDD)
+                    upload_dt = datetime.strptime(upload_date, '%Y%m%d')
+            except ValueError:
+                # If both fail, try parsing as ISO with time
+                upload_dt = datetime.fromisoformat(upload_date.replace('Z', '+00:00').split('+')[0])
+            days_since = (datetime.now() - upload_dt).days
+            return views / max(days_since, 1)
+        except:
+            return 0
+
+    def _analyze_title_patterns(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze title patterns for high-performing videos"""
+        high_performers = df[df['performance_tier'] == 'High']
+        return {
+            'avg_length': high_performers['title_length'].mean(),
+            'common_words': self._get_common_words(high_performers['title'].tolist()),
+            'caps_usage': high_performers['title_caps'].mean(),
+            'numbers_usage': high_performers['title_numbers'].mean(),
+            'punctuation': {
+                'exclamation': high_performers['title_exclamation'].mean(),
+                'question': high_performers['title_question'].mean()
+            }
+        }
+
+    def _analyze_duration_patterns(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze duration patterns for engagement"""
+        duration_performance = df.groupby('duration_category', observed=False).agg({
+            'view_count': 'mean',
+            'like_count': 'mean',
+            'video_id': 'count'
+        }).round(0)
+        return duration_performance.to_dict()
+
+    def _identify_success_factors(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Identify key factors that correlate with success"""
+        high_performers = df[df['performance_tier'] == 'High']
+        correlations = df[[
+            'view_count', 'title_length', 'title_caps', 'title_numbers',
+            'title_exclamation', 'title_question', 'duration_minutes'
+        ]].corr()['view_count'].abs().sort_values(ascending=False)
+        return {
+            'correlations': correlations.to_dict(),
+            'high_performer_traits': {
+                'avg_title_length': high_performers['title_length'].mean(),
+                'avg_duration': high_performers['duration_minutes'].mean(),
+                'common_title_words': self._get_common_words(high_performers['title'].tolist())
+            }
+        }
+
+    def _get_common_words(self, titles: List[str]) -> List[str]:
+        """Extract most common words from titles"""
+        all_words = []
+        for title in titles:
+            words = re.findall(r'\b[a-zA-Z]+\b', title.lower())
+            all_words.extend([word for word in words if len(word) > 3])
+        word_counts = pd.Series(all_words).value_counts()
+        return word_counts.head(10).index.tolist()
+
+    def generate_content_strategy(self, channel_key: str, analysis_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate AI-powered content strategy recommendations"""
+        # First, try cached strategy from Supabase
+        try:
+            cached = get_strategy(channel_key)
+            if isinstance(cached, dict) and cached.get('ai_recommendations'):
+                return cached
+        except Exception:
+            pass
+        if not self.client:
+            basic = self._generate_basic_strategy(analysis_results)
+            try:
+                upsert_strategy(channel_key, basic)
+            except Exception:
+                pass
+            return basic
+        try:
+            # Prepare analysis data for AI
+            top_performers = analysis_results.get('top_performers', pd.DataFrame())
+            title_patterns = analysis_results.get('title_patterns', {})
+            duration_insights = analysis_results.get('duration_insights', {})
+            prompt = f"""
+            Based on the following YouTube channel analysis data, generate a comprehensive content format blueprint and strategy guide:
+
+            Top Performing Videos:
+            {top_performers[['title', 'view_count', 'duration_minutes']].head().to_string() if not top_performers.empty else 'No data available'}
+
+            Title Patterns:
+            - Average length: {title_patterns.get('avg_length', 'N/A')}
+            - Common words: {title_patterns.get('common_words', [])}
+            - Capitalization usage: {title_patterns.get('caps_usage', 'N/A')}
+
+            Duration Insights:
+            {duration_insights}
+
+            Please provide a detailed blueprint that includes:
+
+            1. **Content Planning Strategy**
+            - Topic selection criteria based on top performers
+            - Research methodology for similar content
+            - Content themes that resonate with this audience
+
+            2. **Video Structure Blueprint**
+            - Optimal video length recommendations based on duration data
+            - Segment organization patterns
+            - Opening and closing techniques observed in top videos
+
+            3. **Title and Thumbnail Optimization**
+            - Title formulas derived from successful patterns
+            - Capitalization and keyword strategies
+            - Thumbnail design principles for this niche
+
+            4. **Content Creation Guidelines**
+            - Writing/scripting style recommendations
+            - Delivery techniques and presentation methods
+            - Production quality standards
+
+            5. **Technical Specifications**
+            - Audio/visual requirements
+            - Editing and post-production guidelines
+            - Publishing optimization
+
+            6. **Growth and Engagement Tactics**
+            - Posting frequency suggestions based on channel performance
+            - Audience engagement strategies specific to this content type
+            - Cross-video connection techniques
+
+            7. **Implementation Checklist**
+            - Pre-production planning steps
+            - Production workflow
+            - Post-production and publishing process
+
+            Format this as a comprehensive, actionable blueprint that could be used by content creators to replicate this channel's successful format and approach. Include specific examples from the data where relevant, and make recommendations scalable for channels at different growth stages.
+            """
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt
+            )
+            generated = {
+                'ai_recommendations': response.text,
+                'strategy_type': 'ai_generated'
+            }
+            try:
+                upsert_strategy(channel_key, generated)
+            except Exception:
+                pass
+            return generated
+        except Exception as e:
+            basic = self._generate_basic_strategy(analysis_results)
+            try:
+                upsert_strategy(channel_key, basic)
+            except Exception:
+                pass
+            return basic
+
+    def _generate_basic_strategy(self, analysis_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate basic strategy recommendations without AI"""
+        title_patterns = analysis_results.get('title_patterns', {})
+        duration_insights = analysis_results.get('duration_insights', {})
+        recommendations = [
+            f"Optimal title length: {title_patterns.get('avg_length', 50):.0f} characters",
+            f"Popular keywords: {', '.join(title_patterns.get('common_words', ['trending', 'tips', 'guide'])[:5])}",
+            "Post consistently 2-3 times per week",
+            "Focus on high-engagement video lengths (8-12 minutes)",
+            "Use compelling thumbnails with bright colors and clear text",
+            "Engage with comments within first hour of posting"
+        ]
+        return {
+            'ai_recommendations': '\n'.join(recommendations),
+            'strategy_type': 'basic'
+        }
+
 def _format_published_date(value: Any) -> str:
     """Return a safe YYYY-MM-DD string for various input types."""
     try:
