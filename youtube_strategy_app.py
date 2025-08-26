@@ -31,7 +31,7 @@ from Channel_analysis.youtube_fetcher import (
     normalize_channel_input,
     resolve_channel_id_from_web,
 )
-from youtube_strategy_app.supabase_service import (
+from supabase_service import (
     get_channel_analytics,
     upsert_channel_analytics,
     get_strategy,
