@@ -100,7 +100,7 @@ class YouTubeAnalyzer:
     
     def __init__(self):
         self.client = client
-        self.model = 'gemini-2.0-flash-exp' if client else None
+        self.model = 'gemini-2.5-flash' if client else None
     
     def extract_channel_id(self, url: str) -> Optional[str]:
         """Extract channel ID from various YouTube URL formats"""
