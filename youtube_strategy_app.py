@@ -218,6 +218,12 @@ class YouTubeAnalyzer:
             
         df = pd.DataFrame(videos)
         
+        # Handle different column names for upload date
+        if 'published_at' in df.columns:
+            df['upload_date'] = df['published_at']
+        elif 'upload_date' not in df.columns:
+            df['upload_date'] = ''
+        
         # Performance metrics
         df['views_per_day'] = df.apply(
             lambda row: self._calculate_views_per_day(row['view_count'], row['upload_date']), 
@@ -232,7 +238,14 @@ class YouTubeAnalyzer:
         df['title_question'] = df['title'].str.count('?')
         
         # Duration analysis
-        df['duration_minutes'] = df['duration'] / 60
+        # Handle different column names for duration
+        if 'duration_seconds' in df.columns:
+            df['duration_minutes'] = df['duration_seconds'] / 60
+        elif 'duration' in df.columns:
+            df['duration_minutes'] = df['duration'] / 60
+        else:
+            df['duration_minutes'] = 0
+            
         df['duration_category'] = pd.cut(
             df['duration_minutes'], 
             bins=[0, 1, 5, 10, 20, float('inf')], 
@@ -259,8 +272,21 @@ class YouTubeAnalyzer:
         try:
             if not upload_date:
                 return 0
-                
-            upload_dt = datetime.strptime(upload_date, '%Y%m%d')
+            
+            # Handle different date formats
+            try:
+                # Try ISO format first (from CSV: 2025-08-24 13:00:06+00:00)
+                if 'T' in upload_date or ' ' in upload_date:
+                    # Parse ISO format and strip timezone info
+                    upload_date_clean = upload_date.split('+')[0].split('T')[0].replace(' ', 'T').split('T')[0]
+                    upload_dt = datetime.strptime(upload_date_clean, '%Y-%m-%d')
+                else:
+                    # Try original format (YYYYMMDD)
+                    upload_dt = datetime.strptime(upload_date, '%Y%m%d')
+            except ValueError:
+                # If both fail, try parsing as ISO with time
+                upload_dt = datetime.fromisoformat(upload_date.replace('Z', '+00:00').split('+')[0])
+            
             days_since = (datetime.now() - upload_dt).days
             return views / max(days_since, 1)
         except:
@@ -334,7 +360,7 @@ class YouTubeAnalyzer:
             Based on the following YouTube channel analysis data, generate comprehensive content strategy recommendations:
             
             Top Performing Videos:
-            {top_performers[['title', 'view_count', 'duration']].head().to_string() if not top_performers.empty else 'No data available'}
+            {top_performers[['title', 'view_count', 'duration_minutes']].head().to_string() if not top_performers.empty else 'No data available'}
             
             Title Patterns:
             - Average length: {title_patterns.get('avg_length', 'N/A')}
