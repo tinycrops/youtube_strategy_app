@@ -216,7 +216,11 @@ class YouTubeAnalyzer:
         if not videos:
             return {}
             
-        df = pd.DataFrame(videos)
+        try:
+            df = pd.DataFrame(videos)
+        except Exception as e:
+            st.error(f"Error creating DataFrame: {str(e)}")
+            return {}
         
         # Handle different column names for upload date
         if 'published_at' in df.columns:
@@ -224,18 +228,30 @@ class YouTubeAnalyzer:
         elif 'upload_date' not in df.columns:
             df['upload_date'] = ''
         
-        # Performance metrics
-        df['views_per_day'] = df.apply(
-            lambda row: self._calculate_views_per_day(row['view_count'], row['upload_date']), 
-            axis=1
-        )
+        # Performance metrics with error handling
+        try:
+            df['views_per_day'] = df.apply(
+                lambda row: self._calculate_views_per_day(row.get('view_count', 0), row.get('upload_date', '')), 
+                axis=1
+            )
+        except Exception as e:
+            st.warning(f"Could not calculate views per day: {str(e)}")
+            df['views_per_day'] = 0
         
-        # Title analysis
-        df['title_length'] = df['title'].str.len()
-        df['title_caps'] = df['title'].apply(lambda x: sum(1 for c in x if c.isupper()))
-        df['title_numbers'] = df['title'].apply(lambda x: len(re.findall(r'\d+', x)))
-        df['title_exclamation'] = df['title'].apply(lambda x: x.count('!'))
-        df['title_question'] = df['title'].apply(lambda x: x.count('?'))
+        # Title analysis with error handling
+        try:
+            df['title_length'] = df['title'].fillna('').str.len()
+            df['title_caps'] = df['title'].fillna('').apply(lambda x: sum(1 for c in str(x) if c.isupper()))
+            df['title_numbers'] = df['title'].fillna('').apply(lambda x: len(re.findall(r'\d+', str(x))))
+            df['title_exclamation'] = df['title'].fillna('').apply(lambda x: str(x).count('!'))
+            df['title_question'] = df['title'].fillna('').apply(lambda x: str(x).count('?'))
+        except Exception as e:
+            st.warning(f"Could not analyze titles: {str(e)}")
+            df['title_length'] = 0
+            df['title_caps'] = 0
+            df['title_numbers'] = 0
+            df['title_exclamation'] = 0
+            df['title_question'] = 0
         
         # Duration analysis
         # Handle different column names for duration
@@ -309,7 +325,7 @@ class YouTubeAnalyzer:
     
     def _analyze_duration_patterns(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Analyze duration patterns for engagement"""
-        duration_performance = df.groupby('duration_category').agg({
+        duration_performance = df.groupby('duration_category', observed=False).agg({
             'view_count': 'mean',
             'like_count': 'mean',
             'video_id': 'count'
@@ -615,10 +631,21 @@ def create_strategy_recommendations(df: pd.DataFrame):
     with col2:
         st.markdown("### 📅 Publishing Strategy")
         
-        # Analyze posting frequency
-        df['published_date'] = pd.to_datetime(df['published_at'], errors='coerce')
-        df_recent = df[df['published_date'] > (datetime.now() - timedelta(days=90))]
-        weekly_posts = len(df_recent) / 13  # approximate weeks in 90 days
+        # Analyze posting frequency with defensive programming
+        try:
+            df['published_date'] = pd.to_datetime(df['published_at'], errors='coerce', utc=True)
+            # Handle timezone-aware to timezone-naive conversion
+            if df['published_date'].dt.tz is not None:
+                df['published_date_naive'] = df['published_date'].dt.tz_localize(None)
+            else:
+                df['published_date_naive'] = df['published_date']
+            
+            cutoff_date = datetime.now() - timedelta(days=90)
+            df_recent = df[df['published_date_naive'] > cutoff_date]
+            weekly_posts = len(df_recent) / 13  # approximate weeks in 90 days
+        except Exception as e:
+            st.warning(f"Could not analyze posting frequency: {str(e)}")
+            weekly_posts = 0
         
         st.warning(f"""
         **Current Frequency**: {weekly_posts:.1f} videos per week
