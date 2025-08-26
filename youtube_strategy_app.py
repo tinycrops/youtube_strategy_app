@@ -41,13 +41,38 @@ from supabase_service import (
 # Load environment variables
 load_dotenv()
 
-# Configure Gemini API
-# Support multiple common env var names for convenience
-GEMINI_API_KEY = (
-    os.getenv('GEMINI_API_KEY')
-    or os.getenv('GOOGLE_API_KEY')
-    or os.getenv('GOOGLE_GENAI_API_KEY')
-)
+def _get_first_available_secret(names, default=None):
+    """Return the first non-empty value from Streamlit secrets or environment.
+
+    Checks names in order across st.secrets then os.getenv.
+    """
+    for name in names:
+        # Try Streamlit secrets if available
+        try:
+            if 'secrets' in dir(st) and name in st.secrets:
+                value = st.secrets.get(name)
+                if value:
+                    return str(value)
+        except Exception:
+            pass
+        # Fallback to environment variable
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+# Configure API keys from Streamlit secrets or env vars
+GEMINI_API_KEY = _get_first_available_secret([
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'GOOGLE_GENAI_API_KEY',
+])
+
+# YouTube Data API key (supports multiple common names)
+YOUTUBE_DATA_API_KEY = _get_first_available_secret([
+    'YOUTUBE_DATA_API_KEY',
+    'YOUTUBE_API_KEY',
+])
 client = None
 if GEMINI_API_KEY:
     try:
@@ -268,6 +293,34 @@ class YouTubeAnalyzer:
             'duration_insights': self._analyze_duration_patterns(df),
             'performance_factors': self._identify_success_factors(df)
         }
+
+def _format_published_date(value: Any) -> str:
+    """Return a safe YYYY-MM-DD string for various input types."""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    # If it's already a pandas/py datetime
+    try:
+        if isinstance(value, pd.Timestamp):
+            return value.date().isoformat()
+    except Exception:
+        pass
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    # If it's a string, try to parse or slice safely
+    if isinstance(value, str):
+        try:
+            dt = pd.to_datetime(value, errors='coerce')
+            if pd.notna(dt):
+                return dt.date().isoformat()
+        except Exception:
+            pass
+        # Fallback: best-effort first 10 chars if looks like ISO
+        return value[:10]
+    # Last resort
+    return str(value)[:10]
     
     def _calculate_views_per_day(self, views: int, upload_date: str) -> float:
         """Calculate views per day since upload"""
@@ -587,7 +640,7 @@ def create_content_analysis(df: pd.DataFrame):
             with col2:
                 st.metric("Likes", f"{video['like_count']:,}")
             with col3:
-                st.metric("Published", video['published_at'][:10])
+                st.metric("Published", _format_published_date(video['published_at']))
             st.markdown(f"[Watch Video]({video['url']})")
     
     # Word cloud data
@@ -744,7 +797,8 @@ def main():
                 placeholder="https://www.youtube.com/@channelname"
             )
             max_videos = st.slider("Max Videos to Analyze", 10, 100, 50)
-            yt_api_key = st.text_input("YouTube Data API Key", value=os.getenv("YOUTUBE_API_KEY", ""), type="password")
+            default_key = YOUTUBE_DATA_API_KEY or os.getenv("YOUTUBE_API_KEY", "")
+            yt_api_key = st.text_input("YouTube Data API Key", value=default_key, type="password")
             
         else:
             st.info("Upload your own channel data CSV")
