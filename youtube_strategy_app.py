@@ -234,8 +234,8 @@ class YouTubeAnalyzer:
         df['title_length'] = df['title'].str.len()
         df['title_caps'] = df['title'].apply(lambda x: sum(1 for c in x if c.isupper()))
         df['title_numbers'] = df['title'].apply(lambda x: len(re.findall(r'\d+', x)))
-        df['title_exclamation'] = df['title'].str.count('!')
-        df['title_question'] = df['title'].str.count('?')
+        df['title_exclamation'] = df['title'].apply(lambda x: x.count('!'))
+        df['title_question'] = df['title'].apply(lambda x: x.count('?'))
         
         # Duration analysis
         # Handle different column names for duration
