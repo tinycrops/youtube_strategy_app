@@ -381,29 +381,57 @@ class YouTubeAnalyzer:
             duration_insights = analysis_results.get('duration_insights', {})
             
             prompt = f"""
-            Based on the following YouTube channel analysis data, generate comprehensive content strategy recommendations:
-            
+            Based on the following YouTube channel analysis data, generate a comprehensive content format blueprint and strategy guide:
+
             Top Performing Videos:
             {top_performers[['title', 'view_count', 'duration_minutes']].head().to_string() if not top_performers.empty else 'No data available'}
-            
+
             Title Patterns:
             - Average length: {title_patterns.get('avg_length', 'N/A')}
             - Common words: {title_patterns.get('common_words', [])}
             - Capitalization usage: {title_patterns.get('caps_usage', 'N/A')}
-            
+
             Duration Insights:
             {duration_insights}
-            
-            Please provide:
-            1. Content themes and topics that work well
-            2. Optimal video length recommendations
-            3. Title optimization strategies
-            4. Posting frequency suggestions
-            5. Audience engagement tactics
-            6. Thumbnail design principles
-            7. Growth acceleration tips
-            
-            Format the response as actionable recommendations.
+
+            Please provide a detailed blueprint that includes:
+
+            1. **Content Planning Strategy**
+            - Topic selection criteria based on top performers
+            - Research methodology for similar content
+            - Content themes that resonate with this audience
+
+            2. **Video Structure Blueprint**
+            - Optimal video length recommendations based on duration data
+            - Segment organization patterns
+            - Opening and closing techniques observed in top videos
+
+            3. **Title and Thumbnail Optimization**
+            - Title formulas derived from successful patterns
+            - Capitalization and keyword strategies
+            - Thumbnail design principles for this niche
+
+            4. **Content Creation Guidelines**
+            - Writing/scripting style recommendations
+            - Delivery techniques and presentation methods
+            - Production quality standards
+
+            5. **Technical Specifications**
+            - Audio/visual requirements
+            - Editing and post-production guidelines
+            - Publishing optimization
+
+            6. **Growth and Engagement Tactics**
+            - Posting frequency suggestions based on channel performance
+            - Audience engagement strategies specific to this content type
+            - Cross-video connection techniques
+
+            7. **Implementation Checklist**
+            - Pre-production planning steps
+            - Production workflow
+            - Post-production and publishing process
+
+            Format this as a comprehensive, actionable blueprint that could be used by content creators to replicate this channel's successful format and approach. Include specific examples from the data where relevant, and make recommendations scalable for channels at different growth stages.
             """
             
             response = self.client.models.generate_content(
