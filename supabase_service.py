@@ -44,6 +44,10 @@ def _ensure_json_serializable(records: List[Dict[str, Any]]) -> List[Dict[str, A
     return serializable
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def upsert_channel_analytics(channel_key: str, df: pd.DataFrame) -> None:
     client = get_client()
     data_records: List[Dict[str, Any]] = []
@@ -55,7 +59,7 @@ def upsert_channel_analytics(channel_key: str, df: pd.DataFrame) -> None:
     payload = {
         "channel_key": channel_key,
         "data": data_records,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": _now_iso(),
     }
     try:
         client.table("channel_analytics").upsert(payload, on_conflict="channel_key").execute()
@@ -87,7 +91,7 @@ def upsert_strategy(channel_key: str, strategy: Dict[str, Any]) -> None:
     payload = {
         "channel_key": channel_key,
         "strategy": strategy or {},
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": _now_iso(),
     }
     try:
         client.table("channel_strategies").upsert(payload, on_conflict="channel_key").execute()
@@ -108,5 +112,142 @@ def get_strategy(channel_key: str) -> Optional[Dict[str, Any]]:
         return None
     except Exception:
         return None
+
+
+# ===============
+# Creator Persona
+# ===============
+
+def upsert_creator_persona(persona_key: str, persona: Dict[str, Any]) -> None:
+    """Create or update a creator persona document.
+
+    Expects a Supabase table `creator_personas` with columns:
+      - persona_key (text, primary key)
+      - persona (jsonb)
+      - updated_at (timestamptz)
+    """
+    client = get_client()
+    payload = {
+        "persona_key": persona_key,
+        "persona": persona or {},
+        "updated_at": _now_iso(),
+    }
+    try:
+        client.table("creator_personas").upsert(payload, on_conflict="persona_key").execute()
+    except Exception:
+        # Gracefully ignore if table is missing
+        pass
+
+
+def get_creator_persona(persona_key: str) -> Optional[Dict[str, Any]]:
+    client = get_client()
+    try:
+        res = (
+            client.table("creator_personas")
+            .select("persona")
+            .eq("persona_key", persona_key)
+            .limit(1)
+            .execute()
+        )
+        items = getattr(res, "data", None) or []
+        if not items:
+            return None
+        val = items[0].get("persona")
+        return val if isinstance(val, dict) else None
+    except Exception:
+        return None
+
+
+# =================
+# Content Journal
+# =================
+
+def add_journal_entry(entry: Dict[str, Any]) -> None:
+    """Insert a content journal entry.
+
+    Expected table `content_journal` columns:
+      - id (uuid default gen_random_uuid())
+      - created_at (timestamptz)
+      - updated_at (timestamptz)
+      - entry (jsonb)
+    """
+    client = get_client()
+    payload = {
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+        "entry": entry or {},
+    }
+    try:
+        client.table("content_journal").insert(payload).execute()
+    except Exception:
+        pass
+
+
+def list_journal_entries(limit: int = 50) -> List[Dict[str, Any]]:
+    client = get_client()
+    try:
+        res = (
+            client.table("content_journal")
+            .select("entry, created_at, updated_at")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        items = getattr(res, "data", None) or []
+        out: List[Dict[str, Any]] = []
+        for row in items:
+            ent = row.get("entry") or {}
+            if isinstance(ent, dict):
+                ent["created_at"] = row.get("created_at")
+                ent["updated_at"] = row.get("updated_at")
+                out.append(ent)
+        return out
+    except Exception:
+        return []
+
+
+# =====================
+# Preference Learning
+# =====================
+
+def record_preference_event(event: Dict[str, Any]) -> None:
+    """Record a preference/feedback event.
+
+    Expected table `preference_events` columns:
+      - id (uuid)
+      - created_at (timestamptz)
+      - event (jsonb)
+    """
+    client = get_client()
+    payload = {
+        "created_at": _now_iso(),
+        "event": event or {},
+    }
+    try:
+        client.table("preference_events").insert(payload).execute()
+    except Exception:
+        pass
+
+
+def list_preference_events(limit: int = 100) -> List[Dict[str, Any]]:
+    client = get_client()
+    try:
+        res = (
+            client.table("preference_events")
+            .select("event, created_at")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        items = getattr(res, "data", None) or []
+        out: List[Dict[str, Any]] = []
+        for row in items:
+            ev = row.get("event") or {}
+            if isinstance(ev, dict):
+                ev["created_at"] = row.get("created_at")
+                out.append(ev)
+        return out
+    except Exception:
+        return []
 
 

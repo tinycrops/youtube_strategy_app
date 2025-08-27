@@ -16,6 +16,7 @@ opencv-python>=4.8.0
 google-genai>=0.3.0
 openai>=1.0.0
 anthropic>=0.7.0
+pydantic>=2.6.0
 
 # Image Processing and Analysis
 Pillow>=10.0.0
@@ -26,12 +27,14 @@ python-dotenv>=1.0.0
 
 # Video and Audio Processing
 ffmpeg-python>=0.2.0
+youtube-transcript-api>=0.6.2
 
 # Web Scraping and APIs
 beautifulsoup4>=4.12.0
 selenium>=4.11.0
 supabase>=2.4.0
 tenacity>=8.2.0
+networkx>=3.2.0
 
 # Utilities
 tqdm>=4.65.0
