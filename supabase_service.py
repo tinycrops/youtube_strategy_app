@@ -1,8 +1,9 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from typing import Optional, Dict, Any, List
 
 import pandas as pd
+import numpy as np
 
 _SUPABASE_URL_DEFAULT = "https://zycaxecnoszbcwrfeokn.supabase.co"
 _SUPABASE_ANON_DEFAULT = (
@@ -30,15 +31,42 @@ def _ensure_json_serializable(records: List[Dict[str, Any]]) -> List[Dict[str, A
     for row in records:
         fixed: Dict[str, Any] = {}
         for k, v in row.items():
+            # Normalize missing values
+            try:
+                if v is None or (isinstance(v, float) and np.isnan(v)) or (hasattr(pd, 'isna') and pd.isna(v)):
+                    fixed[k] = None
+                    continue
+            except Exception:
+                pass
+
+            # Datetime-like
             if isinstance(v, pd.Timestamp):
                 v = v.to_pydatetime().isoformat()
-            elif hasattr(v, "isoformat") and callable(getattr(v, "isoformat", None)):
+            elif isinstance(v, (datetime, date)):
                 try:
                     v = v.isoformat()
                 except Exception:
-                    pass
-            if isinstance(v, (pd.Int64Dtype, )):
+                    v = str(v)
+            # Timedelta
+            elif isinstance(v, getattr(pd, 'Timedelta', tuple())):
+                try:
+                    v = v.isoformat()
+                except Exception:
+                    v = str(v)
+            # Numpy scalar types
+            elif isinstance(v, np.integer):
                 v = int(v)
+            elif isinstance(v, np.floating):
+                v = float(v)
+            elif isinstance(v, np.bool_):
+                v = bool(v)
+            # Bytes
+            elif isinstance(v, (bytes, bytearray)):
+                try:
+                    v = v.decode('utf-8', errors='ignore')
+                except Exception:
+                    v = str(v)
+            # Leave lists/dicts/strings as-is
             fixed[k] = v
         serializable.append(fixed)
     return serializable

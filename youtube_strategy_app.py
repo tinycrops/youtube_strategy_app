@@ -1101,6 +1101,49 @@ def load_sample_data():
 
     return channels_data
 
+def _derive_channel_key_from_csv_path(csv_path: Path) -> str:
+    name = csv_path.stem
+    # Normalize common prefixes/suffixes
+    name = name.replace("www.youtube.com_", "").replace("_videos", "")
+    if name.startswith("at_"):
+        name = "@" + name[len("at_"):]
+    return name
+
+def import_csv_outputs_to_supabase_once():
+    """On first run in a session, import any local CSV channel outputs into Supabase."""
+    try:
+        if st.session_state.get("csv_import_done"):
+            return
+        data_dir = Path("Channel_analysis/outputs/channels")
+        if not data_dir.exists():
+            st.session_state["csv_import_done"] = True
+            return
+        for csv_file in data_dir.glob("*.csv"):
+            try:
+                df = pd.read_csv(csv_file)
+                if df is None or df.empty:
+                    continue
+                # Prefer human-readable channel key from data
+                channel_key = None
+                try:
+                    if 'channel' in df.columns and isinstance(df.iloc[0]['channel'], str) and df.iloc[0]['channel']:
+                        channel_key = str(df.iloc[0]['channel'])
+                except Exception:
+                    channel_key = None
+                if not channel_key:
+                    channel_key = _derive_channel_key_from_csv_path(csv_file)
+                try:
+                    upsert_channel_analytics(channel_key, df)
+                except Exception:
+                    # Silent fail to avoid blocking app startup
+                    pass
+            except Exception:
+                continue
+        st.session_state["csv_import_done"] = True
+    except Exception:
+        # Never block the app if import fails
+        st.session_state["csv_import_done"] = True
+
 def create_performance_dashboard(df: pd.DataFrame, channel_name: str):
     """Create comprehensive performance dashboard"""
     
@@ -1368,10 +1411,10 @@ def main():
         
         analysis_mode = st.selectbox(
             "Choose Analysis Mode",
-            ["Sample Channels", "Analyze New Channel", "Upload Custom Data"]
+            ["Saved Channels", "Analyze New Channel", "Upload Custom Data"]
         )
         
-        if analysis_mode == "Sample Channels":
+        if analysis_mode == "Saved Channels":
             st.info("Analyze pre-loaded successful AI/Tech channels")
             
         elif analysis_mode == "Analyze New Channel":
@@ -1389,7 +1432,10 @@ def main():
             uploaded_file = st.file_uploader("Choose CSV file", type=['csv'])
     
     # Main content area
-    if analysis_mode == "Sample Channels":
+    # Import local CSVs into Supabase (one-time per session) so they appear under saved channels
+    import_csv_outputs_to_supabase_once()
+
+    if analysis_mode == "Saved Channels":
         # Load sample data
         channels_data = load_sample_data()
         
@@ -1440,7 +1486,7 @@ def main():
                     persona_key = _derive_persona_key(selected_channel)
                     render_mvp_video_section(df, persona_key, channel_key=selected_channel)
         else:
-            st.warning("No sample data available. Please ensure channel data is in the Channel_analysis/outputs/channels/ directory.")
+            st.warning("No saved data available yet. Analyze a new channel or add CSVs to Channel_analysis/outputs/channels/.")
     
     elif analysis_mode == "Analyze New Channel":
         if st.button("🔍 Analyze Channel") and channel_url:

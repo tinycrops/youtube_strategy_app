@@ -1,0 +1,2 @@
+The internet is reaching out to meet you where you're at.
+The amount of effort you have to invest to get a disproportionate reward in the form of interesting/valuable content recommendation is trending toward zero.

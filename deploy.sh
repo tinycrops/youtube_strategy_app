@@ -25,7 +25,7 @@ deploy_local() {
     
     # Install requirements
     echo "Installing Python requirements..."
-    pip install -r streamlit_requirements.txt
+    pip install -r requirements.txt
     
     # Create necessary directories
     mkdir -p static/videos static/clips Channel_analysis/outputs/channels
