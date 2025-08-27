@@ -45,6 +45,8 @@ from supabase_service import (
     list_journal_entries,
     record_preference_event,
     list_preference_events,
+    save_mvp_video_kit,
+    list_saved_channel_analytics,
 )
 
 # Load environment variables
@@ -789,6 +791,21 @@ def render_mvp_video_section(df: pd.DataFrame, persona_key: str, channel_key: Op
     if not kit:
         st.info("AI unavailable or generation failed.")
         return
+    # Persist generated kit to Supabase
+    try:
+        kit_dict = kit.model_dump() if hasattr(kit, 'model_dump') else {
+            'title': getattr(kit, 'title', None),
+            'hook': getattr(kit, 'hook', None),
+            'outline': getattr(kit, 'outline', None),
+            'script': getattr(kit, 'script', None),
+            'thumbnail_prompt': getattr(kit, 'thumbnail_prompt', None),
+            'description': getattr(kit, 'description', None),
+            'tags': getattr(kit, 'tags', None),
+            'duration_seconds': getattr(kit, 'duration_seconds', None),
+        }
+        save_mvp_video_kit(channel_key or 'uploaded', persona_key, kit_dict)
+    except Exception:
+        pass
     st.markdown(f"**Title**: {kit.title}")
     st.markdown(f"**Hook**: {kit.hook}")
     st.markdown("**Outline**:")
@@ -1058,6 +1075,23 @@ def load_sample_data():
             except Exception as e:
                 st.warning(f"Could not load {csv_file}: {e}")
     
+    # Merge in channels saved in Supabase (most recent first)
+    try:
+        saved = list_saved_channel_analytics(limit=50)
+        for key, df in saved.items():
+            # Prefer human-readable key if present in DF
+            readable = None
+            try:
+                if 'channel' in df.columns and isinstance(df.iloc[0]['channel'], str):
+                    readable = str(df.iloc[0]['channel'])
+            except Exception:
+                readable = None
+            name = readable or key
+            if name not in channels_data and isinstance(df, pd.DataFrame) and not df.empty:
+                channels_data[name] = df
+    except Exception:
+        pass
+
     return channels_data
 
 def create_performance_dashboard(df: pd.DataFrame, channel_name: str):
@@ -1430,6 +1464,11 @@ def main():
                                 upsert_channel_analytics(channel_key, df)
                             except Exception:
                                 pass
+                    # Add to in-session sample list by reloading samples (includes DB)
+                    try:
+                        st.session_state["loaded_channels_cache"] = load_sample_data()
+                    except Exception:
+                        pass
                     if df is not None and not df.empty:
                         st.success(f"Analyzed {len(df)} videos (cached or freshly fetched).")
                         # Show analysis

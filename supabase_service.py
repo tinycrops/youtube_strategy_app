@@ -86,6 +86,32 @@ def get_channel_analytics(channel_key: str) -> Optional[pd.DataFrame]:
         return None
 
 
+def list_saved_channel_analytics(limit: int = 50) -> Dict[str, pd.DataFrame]:
+    """Return a mapping of channel_key -> DataFrame of saved analytics."""
+    client = get_client()
+    out: Dict[str, pd.DataFrame] = {}
+    try:
+        res = (
+            client.table("channel_analytics")
+            .select("channel_key, data, updated_at")
+            .order("updated_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        items = getattr(res, "data", None) or []
+        for row in items:
+            key = row.get("channel_key")
+            records = row.get("data") or []
+            if key and isinstance(records, list) and records:
+                try:
+                    out[key] = pd.DataFrame(records)
+                except Exception:
+                    continue
+        return out
+    except Exception:
+        return out
+
+
 def upsert_strategy(channel_key: str, strategy: Dict[str, Any]) -> None:
     client = get_client()
     payload = {
@@ -249,5 +275,19 @@ def list_preference_events(limit: int = 100) -> List[Dict[str, Any]]:
         return out
     except Exception:
         return []
+
+
+def save_mvp_video_kit(channel_key: str, persona_key: str, kit: Dict[str, Any]) -> None:
+    client = get_client()
+    payload = {
+        "channel_key": channel_key,
+        "persona_key": persona_key,
+        "kit": kit or {},
+        "created_at": _now_iso(),
+    }
+    try:
+        client.table("mvp_video_kits").insert(payload).execute()
+    except Exception:
+        pass
 
 
