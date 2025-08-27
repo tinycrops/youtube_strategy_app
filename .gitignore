@@ -1,3 +1,6 @@
 __pycache__
 .env
 docs/
+CHANNEL_SAVING_FIXES.md
+DATABASE_SETUP.md
+setup_database.py

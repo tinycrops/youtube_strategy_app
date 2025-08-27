@@ -1409,6 +1409,23 @@ def main():
     with st.sidebar:
         st.header("🎛️ Analysis Options")
         
+        # Database status check
+        try:
+            from supabase_service import list_saved_channel_analytics
+            saved_channels = list_saved_channel_analytics(limit=1)
+            if len(saved_channels) > 0:
+                st.success("✅ Database connected")
+            else:
+                st.info("📊 Database connected (no channels saved yet)")
+        except Exception:
+            st.warning("⚠️ Database not configured")
+            with st.expander("Setup Database"):
+                st.markdown("""
+                To enable channel saving:
+                1. See `DATABASE_SETUP.md` for instructions
+                2. Or upload CSV files to work without database
+                """)
+        
         analysis_mode = st.selectbox(
             "Choose Analysis Mode",
             ["Saved Channels", "Analyze New Channel", "Upload Custom Data"]
@@ -1436,8 +1453,17 @@ def main():
     import_csv_outputs_to_supabase_once()
 
     if analysis_mode == "Saved Channels":
-        # Load sample data
-        channels_data = load_sample_data()
+        # Load sample data (check cache first, then reload if needed)
+        cache_key = "loaded_channels_cache"
+        if cache_key not in st.session_state:
+            st.session_state[cache_key] = load_sample_data()
+        channels_data = st.session_state[cache_key]
+        
+        # Add refresh button to manually reload channels
+        if st.sidebar.button("🔄 Refresh Channel List"):
+            st.session_state[cache_key] = load_sample_data()
+            channels_data = st.session_state[cache_key]
+            st.rerun()
         
         if channels_data:
             selected_channel = st.selectbox(
@@ -1486,7 +1512,15 @@ def main():
                     persona_key = _derive_persona_key(selected_channel)
                     render_mvp_video_section(df, persona_key, channel_key=selected_channel)
         else:
-            st.warning("No saved data available yet. Analyze a new channel or add CSVs to Channel_analysis/outputs/channels/.")
+            st.warning("No saved channels found.")
+            st.info("""
+            **To save channels to the database:**
+            1. Set up the required database tables (see DATABASE_SETUP.md)
+            2. Add channels using "Analyze New Channel" mode
+            3. They will then appear in this dropdown
+            
+            **Alternative:** Add CSV files to `Channel_analysis/outputs/channels/` directory
+            """)
     
     elif analysis_mode == "Analyze New Channel":
         if st.button("🔍 Analyze Channel") and channel_url:
@@ -1500,12 +1534,36 @@ def main():
                         normalized_url = normalize_channel_input(channel_url)
                     except Exception:
                         normalized_url = channel_url.strip()
+                    
+                    # Extract human-readable channel handle/name from URL for better display
+                    channel_display_name = None
+                    try:
+                        # Extract @handle from URLs like https://www.youtube.com/@channelname/videos
+                        import re
+                        handle_match = re.search(r'@([^/]+)', normalized_url)
+                        if handle_match:
+                            channel_display_name = "@" + handle_match.group(1)
+                        elif '/c/' in normalized_url:
+                            # Extract from /c/ChannelName format
+                            c_match = re.search(r'/c/([^/]+)', normalized_url)
+                            if c_match:
+                                channel_display_name = c_match.group(1)
+                        elif '/user/' in normalized_url:
+                            # Extract from /user/username format  
+                            u_match = re.search(r'/user/([^/]+)', normalized_url)
+                            if u_match:
+                                channel_display_name = u_match.group(1)
+                    except Exception:
+                        pass
+                    
+                    # Use display name as channel_key if available, otherwise fall back to channel_id or URL
                     channel_id = None
                     try:
                         channel_id = resolve_channel_id_from_web(normalized_url)
                     except Exception:
                         channel_id = None
-                    channel_key = channel_id or normalized_url
+                    
+                    channel_key = channel_display_name or channel_id or normalized_url
                     # Try Supabase cache first
                     df_cached = get_channel_analytics(channel_key)
                     if df_cached is not None and not df_cached.empty:
@@ -1513,17 +1571,21 @@ def main():
                     else:
                         df = analyzer.get_channel_videos_via_api(channel_url, yt_api_key, max_videos=max_videos)
                         if df is not None and not df.empty:
+                            # Add channel name to dataframe for better display
+                            df['channel'] = channel_display_name or channel_key
                             try:
                                 upsert_channel_analytics(channel_key, df)
-                            except Exception:
-                                pass
-                    # Add to in-session sample list by reloading samples (includes DB)
+                            except Exception as e:
+                                st.warning(f"Could not save to database: {e}. Channel data is still available in this session.")
+                    # Invalidate cache and reload samples (includes DB)
                     try:
-                        st.session_state["loaded_channels_cache"] = load_sample_data()
+                        cache_key = "loaded_channels_cache"
+                        st.session_state[cache_key] = load_sample_data()
                     except Exception:
                         pass
                     if df is not None and not df.empty:
-                        st.success(f"Analyzed {len(df)} videos (cached or freshly fetched).")
+                        st.success(f"Analyzed {len(df)} videos (cached or freshly fetched). Channel has been saved to database.")
+                        st.info("💡 **Tip**: Switch to 'Saved Channels' mode to see this channel in the dropdown list for future analysis!")
                         # Show analysis
                         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Performance", "🎯 Content Analysis", "🚀 Strategy", "🧬 Persona", "📓 Journal", "🎬 MVP Video"])
                         with tab1:
