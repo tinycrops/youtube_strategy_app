@@ -45,7 +45,6 @@ from supabase_service import (
     list_journal_entries,
     record_preference_event,
     list_preference_events,
-    save_mvp_video_kit,
     list_saved_channel_analytics,
 )
 
@@ -90,6 +89,13 @@ if GEMINI_API_KEY:
         client = genai.Client(api_key=GEMINI_API_KEY)
     except Exception:
         client = None
+
+# Optional import for MVP kit persistence (fallback to no-op if missing)
+try:
+    import supabase_service as _sb
+    save_mvp_video_kit = getattr(_sb, "save_mvp_video_kit", None)
+except Exception:
+    save_mvp_video_kit = None
 
 # Page configuration
 st.set_page_config(
@@ -803,7 +809,8 @@ def render_mvp_video_section(df: pd.DataFrame, persona_key: str, channel_key: Op
             'tags': getattr(kit, 'tags', None),
             'duration_seconds': getattr(kit, 'duration_seconds', None),
         }
-        save_mvp_video_kit(channel_key or 'uploaded', persona_key, kit_dict)
+        if callable(save_mvp_video_kit):
+            save_mvp_video_kit(channel_key or 'uploaded', persona_key, kit_dict)
     except Exception:
         pass
     st.markdown(f"**Title**: {kit.title}")
