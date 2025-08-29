@@ -642,19 +642,27 @@ def ai_generate_mvp_video(persona: Dict[str, Any], seed_texts: List[str]) -> Opt
     if not client:
         return None
     try:
+        # Consolidate and trim seed context
         seed_blob = "\n".join([s for s in seed_texts if s])[:16000]
         prompt = f"""
-        Generate a minimal viable short video kit for a YouTube creator.
-        Base it on the persona and seed context below. Keep it tight and executable.
+        You are designing a channel-specific Minimal Viable Video (short-form) kit.
+        Use the creator persona and CHANNEL CONTEXT below. Make it executable and concise.
+
         Persona:\n{json.dumps(persona)[:4000]}
-        Seed:\n{seed_blob}
-        Constraints:
-        - Duration 45-120 seconds.
-        - Outline 4-6 bullets, Script 6-12 short lines.
-        - Tags 5-10 items.
-        - Hook punchy, single sentence. CTA specific.
-        Return only JSON for required fields.
+
+        CHANNEL CONTEXT (titles/transcripts/themes):\n{seed_blob}
+
+        Output a JSON object ONLY with the following fields and constraints:
+        - title: catchy, 60-80 chars
+        - hook: 1 sentence, high tension, channel-aligned
+        - outline: 4-6 bullet points (short phrases)
+        - script: 6-12 lines, each 8-14 words, speakable
+        - thumbnail_prompt: concrete visual instructions (no camera jargon)
+        - description: 1-2 sentences + 1 hashtag
+        - tags: 5-10 short tags (no #)
+        - duration_seconds: integer between 45 and 120
         """
+
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
@@ -663,7 +671,41 @@ def ai_generate_mvp_video(persona: Dict[str, Any], seed_texts: List[str]) -> Opt
                 "response_schema": MinimalVideoKitModel,
             },
         )
-        return getattr(response, 'parsed', None)
+
+        parsed = getattr(response, 'parsed', None)
+        if parsed:
+            return parsed
+
+        # Fallback: attempt to parse JSON from text output
+        try:
+            text_out = getattr(response, 'text', '') or ''
+            # Extract JSON block if wrapped
+            import re as _re
+            match = _re.search(r"\{[\s\S]*\}", text_out)
+            json_blob = match.group(0) if match else text_out
+            raw = json.loads(json_blob)
+            # Coerce fields to expected shapes
+            def _coerce_list(value):
+                if isinstance(value, list):
+                    return [str(v) for v in value]
+                if isinstance(value, str):
+                    # Split on lines or commas
+                    parts = [p.strip("- • \n\t ") for p in _re.split(r"\n|,", value) if p.strip()]
+                    return parts[:12]
+                return []
+            coerced = {
+                'title': str(raw.get('title', '')),
+                'hook': str(raw.get('hook', '')),
+                'outline': _coerce_list(raw.get('outline', []))[:6],
+                'script': _coerce_list(raw.get('script', []))[:12],
+                'thumbnail_prompt': str(raw.get('thumbnail_prompt', '')),
+                'description': str(raw.get('description', '')),
+                'tags': _coerce_list(raw.get('tags', []))[:10],
+                'duration_seconds': int(_re.search(r"\d+", str(raw.get('duration_seconds', 90))).group(0)) if _re.search(r"\d+", str(raw.get('duration_seconds', '90'))) else 90,
+            }
+            return MinimalVideoKitModel(**coerced)
+        except Exception:
+            return None
     except Exception:
         return None
 
@@ -792,7 +834,21 @@ def render_mvp_video_section(df: pd.DataFrame, persona_key: str, channel_key: Op
     persona = get_creator_persona(persona_key) or {}
     sample = _random_top5_transcript(df)
     transcript_text = sample.get('transcript', '') if sample else ''
-    seed_texts = [transcript_text]
+    # Enrich seeds with channel-specific context (top titles and keywords)
+    try:
+        top_titles = df.sort_values('view_count', ascending=False).head(10)['title'].astype(str).tolist()
+    except Exception:
+        top_titles = []
+    try:
+        words = re.findall(r'\b[a-zA-Z]+\b', (' '.join(top_titles)).lower())
+        common = pd.Series([w for w in words if len(w) > 3]).value_counts().head(12).index.tolist()
+    except Exception:
+        common = []
+    seed_texts = [
+        transcript_text,
+        "Top Titles:\n" + "\n".join([f"- {t}" for t in top_titles]) if top_titles else "",
+        "Channel Keywords:\n" + ", ".join(common) if common else "",
+    ]
     kit = ai_generate_mvp_video(persona, seed_texts)
     if not kit:
         st.info("AI unavailable or generation failed.")

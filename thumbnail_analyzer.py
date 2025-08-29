@@ -30,7 +30,7 @@ class ThumbnailAnalyzer:
         self.gemini_api_key = gemini_api_key
         if gemini_api_key:
             self.client = genai.Client(api_key=gemini_api_key)
-            self.model = 'gemini-1.5-flash'
+            self.model = 'gemini-2.5-flash'
         else:
             self.model = None
     
