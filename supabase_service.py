@@ -319,3 +319,25 @@ def save_mvp_video_kit(channel_key: str, persona_key: str, kit: Dict[str, Any]) 
         pass
 
 
+# Fetch latest saved MVP kit for a channel/persona
+def get_latest_mvp_video_kit(channel_key: str, persona_key: str) -> Optional[Dict[str, Any]]:
+    client = get_client()
+    try:
+        res = (
+            client.table("mvp_video_kits")
+            .select("kit, created_at")
+            .eq("channel_key", channel_key)
+            .eq("persona_key", persona_key)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        items = getattr(res, "data", None) or []
+        if not items:
+            return None
+        val = items[0].get("kit")
+        return val if isinstance(val, dict) else None
+    except Exception:
+        return None
+
+

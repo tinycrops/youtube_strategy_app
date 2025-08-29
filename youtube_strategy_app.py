@@ -94,8 +94,10 @@ if GEMINI_API_KEY:
 try:
     import supabase_service as _sb
     save_mvp_video_kit = getattr(_sb, "save_mvp_video_kit", None)
+    get_latest_mvp_video_kit = getattr(_sb, "get_latest_mvp_video_kit", None)
 except Exception:
     save_mvp_video_kit = None
+    get_latest_mvp_video_kit = None
 
 # Page configuration
 st.set_page_config(
@@ -832,27 +834,55 @@ def render_content_journal_section(persona_key: str, channel_context: Optional[s
 def render_mvp_video_section(df: pd.DataFrame, persona_key: str, channel_key: Optional[str] = None):
     st.subheader("🎬 Minimal Viable Video (Auto-generated)")
     persona = get_creator_persona(persona_key) or {}
-    sample = _random_top5_transcript(df)
-    transcript_text = sample.get('transcript', '') if sample else ''
-    # Enrich seeds with channel-specific context (top titles and keywords)
+    # First try to load a saved MVP kit
+    loaded_kit: Optional[MinimalVideoKitModel] = None
     try:
-        top_titles = df.sort_values('view_count', ascending=False).head(10)['title'].astype(str).tolist()
+        if callable(get_latest_mvp_video_kit) and channel_key:
+            existing = get_latest_mvp_video_kit(channel_key, persona_key)
+            if isinstance(existing, dict) and existing.get('title'):
+                loaded_kit = MinimalVideoKitModel(**existing)
     except Exception:
-        top_titles = []
-    try:
-        words = re.findall(r'\b[a-zA-Z]+\b', (' '.join(top_titles)).lower())
-        common = pd.Series([w for w in words if len(w) > 3]).value_counts().head(12).index.tolist()
-    except Exception:
-        common = []
-    seed_texts = [
-        transcript_text,
-        "Top Titles:\n" + "\n".join([f"- {t}" for t in top_titles]) if top_titles else "",
-        "Channel Keywords:\n" + ", ".join(common) if common else "",
-    ]
-    kit = ai_generate_mvp_video(persona, seed_texts)
+        loaded_kit = None
+    kit = loaded_kit
+    # If none saved, generate and then save
     if not kit:
-        st.info("AI unavailable or generation failed.")
-        return
+        sample = _random_top5_transcript(df)
+        transcript_text = sample.get('transcript', '') if sample else ''
+        # Enrich seeds with channel-specific context (top titles and keywords)
+        try:
+            top_titles = df.sort_values('view_count', ascending=False).head(10)['title'].astype(str).tolist()
+        except Exception:
+            top_titles = []
+        try:
+            words = re.findall(r'\b[a-zA-Z]+\b', (' '.join(top_titles)).lower())
+            common = pd.Series([w for w in words if len(w) > 3]).value_counts().head(12).index.tolist()
+        except Exception:
+            common = []
+        seed_texts = [
+            transcript_text,
+            "Top Titles:\n" + "\n".join([f"- {t}" for t in top_titles]) if top_titles else "",
+            "Channel Keywords:\n" + ", ".join(common) if common else "",
+        ]
+        kit = ai_generate_mvp_video(persona, seed_texts)
+        if not kit:
+            st.info("AI unavailable or generation failed.")
+            return
+        # Persist generated kit to Supabase
+        try:
+            kit_dict = kit.model_dump() if hasattr(kit, 'model_dump') else {
+                'title': getattr(kit, 'title', None),
+                'hook': getattr(kit, 'hook', None),
+                'outline': getattr(kit, 'outline', None),
+                'script': getattr(kit, 'script', None),
+                'thumbnail_prompt': getattr(kit, 'thumbnail_prompt', None),
+                'description': getattr(kit, 'description', None),
+                'tags': getattr(kit, 'tags', None),
+                'duration_seconds': getattr(kit, 'duration_seconds', None),
+            }
+            if callable(save_mvp_video_kit):
+                save_mvp_video_kit(channel_key or 'uploaded', persona_key, kit_dict)
+        except Exception:
+            pass
     # Persist generated kit to Supabase
     try:
         kit_dict = kit.model_dump() if hasattr(kit, 'model_dump') else {
